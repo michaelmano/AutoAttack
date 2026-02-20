@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: AutoAttack
+## Notes: Automatically starts melee attack when casting offensive spells
+## Author: Skirtz
+## Version: 1.0
+## SavedVariables: AutoAttackDB
+AutoAttack.lua
