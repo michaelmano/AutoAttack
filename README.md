@@ -24,8 +24,8 @@ git clone https://github.com/michaelmano/AutoAttack.git
 
 ### Option B — Download ZIP
 1. Click **Code → Download ZIP** on the GitHub repository page.
-2. Extract the ZIP — this will produce a folder called `AutoAttack-main`.
-3. Rename it to `AutoAttack` (remove the `-main` suffix).
+2. Extract the ZIP — this will produce a folder called `AutoAttack-master`.
+3. Rename it to `AutoAttack` (remove the `-master` suffix).
 4. Move the `AutoAttack` folder into:
    ```
    path/to/wow/Interface/AddOns/
