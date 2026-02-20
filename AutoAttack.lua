@@ -121,11 +121,11 @@ local RESOURCE_ERRORS = {
     ["Not enough focus"]   = true,
 }
 
-local AA = {}  -- namespace for methods only
+local AutoAttack = {}
 
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
-        AA:HookActionButtons()
+        AutoAttack:HookActionButtons()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
         AutoAttackSession.inZG = (GetZoneText() == ZG_ZONE)
@@ -191,7 +191,7 @@ local BUTTON_PREFIXES = {
     "MultiBarLeftButton",
 }
 
-function AA:HookActionButtons()
+function AutoAttack:HookActionButtons()
     for _, prefix in ipairs(BUTTON_PREFIXES) do
         for i = 1, 12 do
             local btnName = prefix .. i
