@@ -1,24 +1,29 @@
--- AutoAttack.lua
 -- 1. Starts auto-attack when you press an ability with no rage/energy/mana.
 -- 2. Automatically attacks back when a mob attacks you and auto-targets you.
--- 3. In Zul'Gurub (zone 1977): when YOU target Ohgan or Bloodlord Mandokir,
---    begins polling the raid. Suppresses the AutoAttack Addon while anyone is targeting
---    them. Stops polling once nobody is targeting them anymore.
+-- 3. In Zul'Gurub: when YOU target Ohgan or Bloodlord Mandokir, begins polling
+--    the raid. Suppresses auto-attack while anyone is targeting them. Stops
+--    polling once nobody is targeting them anymore.
 -- Compatible with Turtle WoW 1.12 client
 
 AutoAttackDB = AutoAttackDB or {
-    enabled = true,
+    enabled   = true,
+    retaliate = true,
+    debug     = false,
 }
 
--- Runtime-only state — not persisted
+if AutoAttackDB.retaliate == nil then AutoAttackDB.retaliate = true end
+if AutoAttackDB.debug     == nil then AutoAttackDB.debug     = false end
+
 local AutoAttackSession = {
     inCombat     = false,
     zgSuppressed = false,
     inZG         = false,
     polling      = false,
+    lastAttack   = 0,
 }
 
-local ZG_ZONE = "Zul'Gurub"
+local ATTACK_DEBOUNCE = 0.5
+local ZG_ZONE         = "Zul'Gurub"
 
 local WATCH_TARGETS = {
     ["ohgan"]              = true,
@@ -28,20 +33,57 @@ local WATCH_TARGETS = {
 local SCAN_INTERVAL = 0.5
 local scanTimer     = 0
 
--- Core attack function
+-- Debug helper
 -------------------------------------------------------------------------------
 
-local function TryStartAttack()
-    if not AutoAttackDB.enabled then return end
-    if AutoAttackSession.zgSuppressed then return end
+local function Debug(msg)
+    if not AutoAttackDB.debug then return end
+    DEFAULT_CHAT_FRAME:AddMessage("|cffaaaaaa[AutoAttack Debug]|r " .. tostring(msg))
+end
 
-    if UnitExists("target")
-       and UnitCanAttack("player", "target")
-       and not UnitIsDead("target")
-       and not UnitIsCorpse("target") then
-        if SlashCmdList["STARTATTACK"] then
-            SlashCmdList["STARTATTACK"]("")
-        end
+-- Core attack function
+-- forceAttack: bypasses the retaliate check (button presses, SPELLCAST_FAILED)
+-------------------------------------------------------------------------------
+
+local function TryStartAttack(forceAttack)
+    if not AutoAttackDB.enabled then
+        Debug("TryStartAttack blocked — addon disabled")
+        return
+    end
+    if AutoAttackSession.zgSuppressed then
+        Debug("TryStartAttack blocked — ZG suppressed")
+        return
+    end
+    if not forceAttack and not AutoAttackDB.retaliate then
+        Debug("TryStartAttack blocked — retaliate is off")
+        return
+    end
+
+    local now = GetTime()
+    if (now - AutoAttackSession.lastAttack) < ATTACK_DEBOUNCE then
+        Debug("TryStartAttack blocked — debounce (" .. string.format("%.2f", now - AutoAttackSession.lastAttack) .. "s ago)")
+        return
+    end
+
+    if not UnitExists("target") then
+        Debug("TryStartAttack blocked — no target")
+        return
+    end
+    if not UnitCanAttack("player", "target") then
+        Debug("TryStartAttack blocked — cannot attack target")
+        return
+    end
+    if UnitIsDead("target") or UnitIsCorpse("target") then
+        Debug("TryStartAttack blocked — target is dead")
+        return
+    end
+
+    if SlashCmdList["STARTATTACK"] then
+        AutoAttackSession.lastAttack = now
+        Debug("TryStartAttack — calling STARTATTACK on: " .. tostring(UnitName("target")))
+        SlashCmdList["STARTATTACK"]("")
+    else
+        Debug("TryStartAttack blocked — STARTATTACK handler is nil!")
     end
 end
 
@@ -83,17 +125,18 @@ local function UpdateZGSuppression()
     if watching and not AutoAttackSession.zgSuppressed then
         AutoAttackSession.zgSuppressed = true
         DEFAULT_CHAT_FRAME:AddMessage(
-            "|cff00ff00AutoAttack|r: |cffff4400Suppressed|r — raid targeting " .. tostring(targetName) .. "."
+            "|cffffb6c1AutoAttack|r: |cffff4400Suppressed|r — raid targeting " .. tostring(targetName) .. "."
         )
 
     elseif not watching and AutoAttackSession.zgSuppressed then
         AutoAttackSession.zgSuppressed = false
         AutoAttackSession.polling      = false
         DEFAULT_CHAT_FRAME:AddMessage(
-            "|cff00ff00AutoAttack|r: |cff00ff00Resumed|r — no raid member targeting watched units."
+            "|cffffb6c1AutoAttack|r: |cff00ff00Resumed|r — no raid member targeting watched units."
         )
 
     elseif not watching and not AutoAttackSession.zgSuppressed then
+        Debug("ZG poll — no watched targets found, stopping poll")
         AutoAttackSession.polling = false
     end
 end
@@ -122,42 +165,53 @@ local AutoAttack = {}
 
 frame:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
+        Debug("PLAYER_LOGIN — hooking action buttons")
         AutoAttack:HookActionButtons()
 
     elseif event == "PLAYER_ENTERING_WORLD" then
-        AutoAttackSession.inZG = (GetZoneText() == ZG_ZONE)
+        local zone = GetZoneText()
+        AutoAttackSession.inZG = (zone == ZG_ZONE)
+        Debug("PLAYER_ENTERING_WORLD — zone: " .. tostring(zone) .. "  inZG: " .. tostring(AutoAttackSession.inZG))
         if not AutoAttackSession.inZG then
             AutoAttackSession.zgSuppressed = false
             AutoAttackSession.polling      = false
         end
 
     elseif event == "SPELLCAST_FAILED" then
-        TryStartAttack()
+        Debug("SPELLCAST_FAILED — calling TryStartAttack (forced)")
+        TryStartAttack(true)
 
     elseif event == "UI_ERROR_MESSAGE" then
         if arg1 and RESOURCE_ERRORS[arg1] then
-            TryStartAttack()
+            Debug("UI_ERROR_MESSAGE — resource error: " .. tostring(arg1))
+            TryStartAttack(true)
         end
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         AutoAttackSession.inCombat = true
-        TryStartAttack()
+        Debug("PLAYER_REGEN_DISABLED — entered combat  retaliate: " .. tostring(AutoAttackDB.retaliate))
+        TryStartAttack(false)
 
     elseif event == "PLAYER_REGEN_ENABLED" then
+        Debug("PLAYER_REGEN_ENABLED — left combat")
         AutoAttackSession.inCombat = false
 
     elseif event == "PLAYER_TARGET_CHANGED" then
+        local targetName = UnitExists("target") and UnitName("target") or "none"
+        Debug("PLAYER_TARGET_CHANGED — target: " .. targetName .. "  inCombat: " .. tostring(AutoAttackSession.inCombat))
+
         if AutoAttackSession.inZG and PlayerTargetingWatchedUnit() and not AutoAttackSession.polling then
-            AutoAttackSession.polling  = true
-            scanTimer   = 0
+            AutoAttackSession.polling = true
+            scanTimer = 0
             DEFAULT_CHAT_FRAME:AddMessage(
-                "|cff00ff00AutoAttack|r: |cffffff00Watching|r — " ..
-                UnitName("target") .. " targeted, monitoring raid."
+                "|cffffb6c1AutoAttack|r: |cffffff00Watching|r — " ..
+                targetName .. " targeted, monitoring raid."
             )
         end
 
         if AutoAttackSession.inCombat then
-            TryStartAttack()
+            Debug("PLAYER_TARGET_CHANGED — in combat, calling TryStartAttack (not forced)")
+            TryStartAttack(false)
         end
     end
 end)
@@ -195,7 +249,8 @@ function AutoAttack:HookActionButtons()
                 local original = btn:GetScript("OnClick")
                 if original then
                     btn:SetScript("OnClick", function()
-                        TryStartAttack()
+                        Debug("Button pressed: " .. btnName)
+                        TryStartAttack(true)
                         original()
                     end)
                 end
@@ -212,25 +267,66 @@ SLASH_AUTOATTACK2 = "/aa"
 
 SlashCmdList["AUTOATTACK"] = function(msg)
     msg = string.lower(msg or "")
-    if msg == "on" then
+
+    if msg == "" then
+        AutoAttackDB.enabled = not AutoAttackDB.enabled
+        local state = AutoAttackDB.enabled and "|cff00ff00ON|r" or "|cffff0000OFF|r"
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Toggled " .. state .. ".")
+
+    elseif msg == "retaliate" then
+        AutoAttackDB.retaliate = not AutoAttackDB.retaliate
+        local state = AutoAttackDB.retaliate and "|cff00ff00ON|r" or "|cffff0000OFF|r"
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Retaliate toggled " .. state .. ".")
+
+    elseif msg == "debug" then
+        AutoAttackDB.debug = not AutoAttackDB.debug
+        local state = AutoAttackDB.debug and "|cff00ff00ON|r" or "|cffff0000OFF|r"
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Debug toggled " .. state .. ".")
+
+    elseif msg == "on" then
         AutoAttackDB.enabled = true
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00AutoAttack|r: Enabled.")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Enabled.")
     elseif msg == "off" then
         AutoAttackDB.enabled = false
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00AutoAttack|r: Disabled.")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Disabled.")
+
+    elseif msg == "retaliate on" then
+        AutoAttackDB.retaliate = true
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Retaliate Enabled.")
+    elseif msg == "retaliate off" then
+        AutoAttackDB.retaliate = false
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Retaliate Disabled.")
+
+    elseif msg == "debug on" then
+        AutoAttackDB.debug = true
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Debug Enabled.")
+    elseif msg == "debug off" then
+        AutoAttackDB.debug = false
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Debug Disabled.")
+
     elseif msg == "status" then
-        local state = AutoAttackDB.enabled and "|cff00ff00ON|r"  or "|cffff0000OFF|r"
-        local zg    = AutoAttackSession.inZG              and "|cff00ff00yes|r" or "no"
-        local poll  = AutoAttackSession.polling           and "|cffffff00yes|r" or "no"
-        local supp  = AutoAttackSession.zgSuppressed      and "|cffff4400yes|r" or "no"
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00AutoAttack|r: " .. state ..
+        local state = AutoAttackDB.enabled          and "|cff00ff00ON|r"  or "|cffff0000OFF|r"
+        local retal = AutoAttackDB.retaliate        and "|cff00ff00ON|r"  or "|cffff0000OFF|r"
+        local dbg   = AutoAttackDB.debug            and "|cff00ff00ON|r"  or "|cffff0000OFF|r"
+        local zg    = AutoAttackSession.inZG         and "|cff00ff00yes|r" or "no"
+        local poll  = AutoAttackSession.polling      and "|cffffff00yes|r" or "no"
+        local supp  = AutoAttackSession.zgSuppressed and "|cffff4400yes|r" or "no"
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: " .. state ..
+            "  |  Retaliate: " .. retal ..
+            "  |  Debug: " .. dbg ..
             "  |  Zone: " .. tostring(GetZoneText()) ..
             "  |  In ZG: " .. zg ..
             "  |  Polling: " .. poll ..
             "  |  Suppressed: " .. supp)
+
     else
-        local state = AutoAttackDB.enabled and "|cff00ff00ON|r" or "|cffff0000OFF|r"
-        DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00AutoAttack|r: Currently " .. state ..
-            ".  Usage: /aa on | /aa off | /aa status")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffffb6c1AutoAttack|r: Usage:")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa  |  /aa toggle          — toggle addon on/off")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa on  |  /aa off          — explicit on/off")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa retaliate               — toggle retaliate")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa retaliate on|off        — explicit retaliate")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa debug                   — toggle debug")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa debug on|off            — explicit debug")
+        DEFAULT_CHAT_FRAME:AddMessage("  /aa status                  — show all settings")
     end
 end
